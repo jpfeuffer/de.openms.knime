@@ -131,6 +131,9 @@ public class MzTabReaderNodeModel extends NodeModel {
     @Override
     protected BufferedDataTable[] execute(final PortObject[] inObjects,
             final ExecutionContext exec) throws Exception {
+    	
+    	// boolean if you want to force reading after a wrong line occurred
+    	boolean force = false;
 
         // reset indices ..
         metaDataRowIdx = 1;
@@ -191,9 +194,14 @@ public class MzTabReaderNodeModel extends NodeModel {
                 if (line.trim().length() == 0)
                     continue;
 
+                //TODO allow skipping those line without error
                 if (line.trim().length() < 3) {
-                    throw new InvalidMzTabFormatException(
-                            "Found non-empty line without an identifier.");
+                	if (!force){
+	                    throw new InvalidMzTabFormatException(
+	                            "Found non-empty line without an identifier.");
+                	} else {
+                		continue;
+                	}
                 }
 
                 // extract line identifier
@@ -221,7 +229,13 @@ public class MzTabReaderNodeModel extends NodeModel {
                     smallMolContainer = exec.createDataContainer(smSpec);
                 } else if ("SML".equals(identifier)) { // handle SML
                     parseSMLLine(smallMolContainer, line);
+                } else if ("COM".equals(identifier)) { // comment line
+                	continue; 
+                } else if (!force) {
+                    throw new InvalidMzTabFormatException(
+                            "Found non-empty line with unknown or no identifier. Remember, mzTab 2.0 is not yet supported.");
                 }
+                
                 // allow knime to cancel node execution
                 exec.checkCanceled();
             } while ((line = brReader.readLine()) != null);
@@ -371,72 +385,52 @@ public class MzTabReaderNodeModel extends NodeModel {
                 .getNumColumns()];
         // convert the entries into a table column
         for (int i = 0; i < container.getTableSpec().getNumColumns(); ++i) {
-            if (container.getTableSpec().getColumnSpec(i).getType() == IntCell.TYPE) {
-                if (line_entries[i + 1] == null
-                        || "null".equals(line_entries[i + 1])
-                        || "-".equals(line_entries[i + 1])) {
-                    cells[i] = new MissingCell(line_entries[i + 1]);
-                } else {
-                    cells[i] = new IntCell(
-                            Integer.parseInt(line_entries[i + 1]));
-                }
-            } else if (container.getTableSpec().getColumnSpec(i).getType() == DoubleCell.TYPE) {
-                // we need to make sure that it is a proper value
-                if (line_entries[i + 1] == null
-                        || "INF".equals(line_entries[i + 1])
-                        || "NaN".equals(line_entries[i + 1])
-                        || "null".equals(line_entries[i + 1])
-                        || "-".equals(line_entries[i + 1])) {
-                    cells[i] = new MissingCell(line_entries[i + 1]);
-                } else {
-                    cells[i] = new DoubleCell(
-                            Double.parseDouble(line_entries[i + 1]));
-                }
-            } else if (container.getTableSpec().getColumnSpec(i).getType() == ListCell.getCollectionType(DoubleCell.TYPE)) {
-                // we need to make sure that it is a proper value
-                if (line_entries[i + 1] == null
-                        || "null".equals(line_entries[i + 1])
-                        || "-".equals(line_entries[i + 1])) {
-                    cells[i] = new MissingCell(line_entries[i + 1]);
-                } else {
-                	ArrayList<DoubleCell> lc = new ArrayList<DoubleCell>();
-                	//escaping the pipe. TODO Think about putting separators and missing values as constant values.
-                	for (String dstr : line_entries[i + 1].split("\\|"))
-                	{
-                		double d = Double.parseDouble(dstr);
-                		lc.add(new DoubleCell(d));
-                	}
-                	ListCell outputCell = CollectionCellFactory.createListCell(lc);
-                	cells[i] = outputCell;
-                }
-            } else if (container.getTableSpec().getColumnSpec(i).getType() == BooleanCell.TYPE) {
-                // we need to make sure that it is a proper value
-                if (line_entries[i + 1] == null
-                        || "null".equals(line_entries[i + 1])
-                        || "-".equals(line_entries[i + 1])) {
-                    cells[i] = new MissingCell(line_entries[i + 1]);
-                } else {
+        	String v = line_entries[i + 1];
+        	if (v == null){
+        		cells[i] = new MissingCell(v);
+        		continue;
+        	} else {
+            	v = v.trim();
+        	}
+
+            if (isMissing(v)){
+                cells[i] = new MissingCell(v);
+            } else {
+	            if (container.getTableSpec().getColumnSpec(i).getType() == IntCell.TYPE) {
+	                cells[i] = parseNonNullStringToIntCell(v);
+	            } else if (container.getTableSpec().getColumnSpec(i).getType() == DoubleCell.TYPE) {
+	            	cells[i] = parseNonNullStringToDoubleCell(v);
+	            } else if (container.getTableSpec().getColumnSpec(i).getType() == ListCell.getCollectionType(DoubleCell.TYPE)) {
+	            	ArrayList<DataCell> lc = new ArrayList<DataCell>();
+	            	//escaping the pipe. TODO Think about putting separators and missing values as constant values.
+	            	for (String dstr : v.split("\\|")){
+	            		if (!isMissing(dstr)){
+	            			lc.add(parseNonNullStringToDoubleCell(dstr));
+	            		} else {
+	            			lc.add(new MissingCell(dstr));
+	            		}
+	            	}
+	            	ListCell outputCell = CollectionCellFactory.createListCell(lc);
+	            	cells[i] = outputCell;
+	            } else if (container.getTableSpec().getColumnSpec(i).getType() == BooleanCell.TYPE) {
                 	BooleanCell cell = BooleanCell.FALSE;
-                	if (convertToBoolean(line_entries[i + 1])) {
+                	if (convertToBoolean(v)) {
                 		cell = BooleanCell.TRUE;
                 	}
                 	cells[i] = cell;
-                }
-            } else {
-                // it is a string value -> just put it into the
-                // table
-                cells[i] = new StringCell(line_entries[i + 1]);
+	            } else {
+	                // it is a string value -> just put it into the
+	                // table
+	                cells[i] = new StringCell(line_entries[i + 1]);
+	            }
             }
         }
         return cells;
     }
     
     private boolean convertToBoolean(String value) {
-        boolean returnValue = false;
-        if ("1".equalsIgnoreCase(value) || "yes".equalsIgnoreCase(value) || 
-            "true".equalsIgnoreCase(value) || "on".equalsIgnoreCase(value))
-            returnValue = true;
-        return returnValue;
+        return "1".equalsIgnoreCase(value) || "yes".equalsIgnoreCase(value) || 
+            "true".equalsIgnoreCase(value) || "on".equalsIgnoreCase(value);
     }
 
     private DataTableSpec parseHeaderLine(final String line) {
@@ -565,5 +559,54 @@ public class MzTabReaderNodeModel extends NodeModel {
             final ExecutionMonitor exec) throws IOException,
             CanceledExecutionException {
     }
+    
+    
+    private DataCell parseNonNullStringToDoubleCell(String v)
+    {
+    	// mzTab uses "Inf" instead of Javas "Infinity", so catch that first
+    	if ("Inf".equals(v)){
+        	return new DoubleCell(Double.POSITIVE_INFINITY);
+        } else if ("-Inf".equals(v)) {
+        	return new DoubleCell(Double.NEGATIVE_INFINITY);
+        } else {
+        	try {
+                return new DoubleCell(
+                        Double.parseDouble(v));
+        	} catch (NumberFormatException e) {
+        		logger.warn("Error converting " + v + "to a Double.");
+        		return new MissingCell("ParseError");
+        	}
+        }
+    }
+    
+    private DataCell parseNonNullStringToIntCell(String v)
+    {
+    	// mzTab uses "Inf" instead of Javas "Infinity", so catch that first
+    	//TODO think about putting highest/lowest Int instead of missing cell
+    	if ("Inf".equals(v)){
+        	return new MissingCell("Inf");
+        } else if ("-Inf".equals(v)) {
+        	return new MissingCell("-Inf");
+        } else if ("NaN".equals(v)) {
+        	return new MissingCell("NaN");
+        } else {
+        	try {
+                return new IntCell(
+                        Integer.parseInt(v));
+        	} catch (NumberFormatException e) {
+        		logger.warn("Error converting " + v + "to an Integer.");
+        		return new MissingCell("ParseError");
+        	}
+        }
+    }
+    
+    private boolean isMissing(String v)
+    {
+        return "null".equals(v)
+        || "-".equals(v)
+        || v.isEmpty();
+    }
+    	
+
 
 }
